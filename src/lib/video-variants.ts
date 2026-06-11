@@ -392,3 +392,121 @@ export const QUICK_PACKS: { id: string; label: string; recipeIds: string[] }[] =
 export function getRecipesByCategory(category: VariantCategory): VariantRecipe[] {
   return VARIANT_RECIPES.filter((r) => r.category === category);
 }
+
+const OUTPUT_DIMENSIONS: Record<string, { w: number; h: number }> = {
+  "res-4k": { w: 3840, h: 2160 },
+  "res-1080p": { w: 1920, h: 1080 },
+  "res-720p": { w: 1280, h: 720 },
+  "res-480p": { w: 854, h: 480 },
+  "res-360p": { w: 640, h: 360 },
+  "aspect-reels": { w: 1080, h: 1920 },
+  "aspect-square": { w: 1080, h: 1080 },
+  "aspect-instagram": { w: 1080, h: 1350 },
+  "aspect-youtube": { w: 1920, h: 1080 },
+};
+
+const SCALE_PAD_RE =
+  /^scale=\d+:\d+:force_original_aspect_ratio=decrease,pad=\d+:\d+:\(ow-iw\)\/2:\(oh-ih\)\/2:black,?/;
+
+function stripEmbeddedScalePad(filter: string): string {
+  return filter.replace(SCALE_PAD_RE, "").replace(/^,/, "");
+}
+
+function pickLast<T>(items: T[]): T | undefined {
+  return items.length > 0 ? items[items.length - 1] : undefined;
+}
+
+function zoomFilterForSize(recipeId: string, w: number, h: number): string {
+  switch (recipeId) {
+    case "zoom-in-10":
+      return zoomCrop(w, h, 1.1);
+    case "zoom-in-25":
+      return zoomCrop(w, h, 1.25);
+    case "zoom-in-50":
+      return zoomCrop(w, h, 1.5);
+    case "zoom-out-10":
+      return `scale=${Math.round(w * 0.9)}:${Math.round(h * 0.9)}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black`;
+    default:
+      return "";
+  }
+}
+
+function extractFadeFilters(recipe: VariantRecipe, durationSec: number): string[] {
+  const raw = stripEmbeddedScalePad(recipe.buildVideoFilter(durationSec));
+  return raw.split(",").filter((part) => part.startsWith("fade="));
+}
+
+function buildCombinedSuffix(recipes: VariantRecipe[]): string {
+  const tags = recipes.map((r) => r.outputSuffix).slice(0, 4);
+  const suffix = tags.join("-");
+  return suffix.length > 48 ? `${suffix.slice(0, 48)}-combo` : `${suffix}-combo`;
+}
+
+/** Merge all selected options into one FFmpeg video filter chain. */
+export function buildCombinedVideoFilter(
+  selectedIds: Iterable<string>,
+  durationSec: number
+): { vf: string; audioFilter: string | null; suffix: string; labels: string[] } {
+  const ids = Array.from(selectedIds);
+  const recipes = VARIANT_RECIPES.filter((r) => ids.includes(r.id));
+
+  if (recipes.length === 0) {
+    return {
+      vf: scalePad(1920, 1080),
+      audioFilter: null,
+      suffix: "combined",
+      labels: [],
+    };
+  }
+
+  const aspects = recipes.filter((r) => r.category === "aspect");
+  const resolutions = recipes.filter((r) => r.category === "resolution");
+  const dimRecipe = pickLast(aspects) ?? pickLast(resolutions);
+  const { w, h } = dimRecipe
+    ? (OUTPUT_DIMENSIONS[dimRecipe.id] ?? { w: 1920, h: 1080 })
+    : { w: 1920, h: 1080 };
+
+  const parts: string[] = [];
+
+  const speedRecipe = pickLast(recipes.filter((r) => r.category === "speed"));
+  if (speedRecipe) {
+    parts.push(stripEmbeddedScalePad(speedRecipe.buildVideoFilter(durationSec)));
+  }
+
+  for (const flip of recipes.filter((r) => r.category === "flip")) {
+    parts.push(stripEmbeddedScalePad(flip.buildVideoFilter(durationSec)));
+  }
+
+  for (const color of recipes.filter((r) => r.category === "color")) {
+    parts.push(stripEmbeddedScalePad(color.buildVideoFilter(durationSec)));
+  }
+
+  const kenBurns = recipes.find((r) => r.id === "zoom-ken-burns");
+  const zoomRecipe = pickLast(
+    recipes.filter((r) => r.category === "zoom" && r.id !== "zoom-ken-burns")
+  );
+
+  if (kenBurns) {
+    parts.push(kenBurns.buildVideoFilter(durationSec));
+  } else {
+    if (zoomRecipe) {
+      const zoomPart = zoomFilterForSize(zoomRecipe.id, w, h);
+      if (zoomPart) parts.push(zoomPart);
+    }
+    parts.push(scalePad(w, h));
+  }
+
+  for (const fade of recipes.filter((r) => r.category === "fade")) {
+    parts.push(...extractFadeFilters(fade, durationSec));
+  }
+
+  const vf = parts.filter(Boolean).join(",");
+  const audioFilter = speedRecipe ? getAudioFilterForRecipe(speedRecipe.id) : null;
+
+  return {
+    vf,
+    audioFilter,
+    suffix: buildCombinedSuffix(recipes),
+    labels: recipes.map((r) => r.label),
+  };
+}

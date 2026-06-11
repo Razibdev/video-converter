@@ -102,3 +102,59 @@ export const ARCHIVE_SAMPLE = {
   attribution: "Big Buck Bunny — Internet Archive",
   attributionUrl: "https://archive.org/details/BigBuckBunny_124",
 };
+
+/** Quick-pick clips for Video Variant Studio (all free licenses) */
+export const STUDIO_STOCK_SAMPLES = [
+  {
+    id: "mixkit-waves",
+    label: "Ocean waves (Mixkit)",
+    fileName: "mixkit-waves.mp4",
+    license: "Mixkit License",
+    ...MIXKIT_SAMPLE,
+  },
+  {
+    id: "mixkit-forest",
+    label: "Forest path (Mixkit)",
+    fileName: "mixkit-forest.mp4",
+    src: "https://assets.mixkit.co/videos/preview/mixkit-going-down-a-curved-highway-through-a-forest-41576-large.mp4",
+    poster:
+      "https://assets.mixkit.co/videos/preview/mixkit-going-down-a-curved-highway-through-a-forest-41576-thumb.jpg",
+    attribution: "Mixkit / mixkit.co",
+    attributionUrl:
+      "https://mixkit.co/free-stock-video/going-down-a-curved-highway-through-a-forest-41576/",
+    license: "Mixkit License",
+  },
+  {
+    id: "mixkit-city",
+    label: "City timelapse (Mixkit)",
+    fileName: "mixkit-city.mp4",
+    src: "https://assets.mixkit.co/videos/preview/mixkit-night-traffic-in-a-city-1096-large.mp4",
+    poster:
+      "https://assets.mixkit.co/videos/preview/mixkit-night-traffic-in-a-city-1096-thumb.jpg",
+    attribution: "Mixkit / mixkit.co",
+    attributionUrl:
+      "https://mixkit.co/free-stock-video/night-traffic-in-a-city-1096/",
+    license: "Mixkit License",
+  },
+  {
+    id: "wikimedia-bbb",
+    label: "Big Buck Bunny trailer (Wikimedia)",
+    fileName: "big-buck-bunny.webm",
+    ...WIKIMEDIA_SAMPLE,
+    license: "CC BY 3.0",
+  },
+  {
+    id: "archive-bbb",
+    label: "Big Buck Bunny full (Internet Archive)",
+    fileName: "big-buck-bunny-archive.mp4",
+    ...ARCHIVE_SAMPLE,
+    license: "Public domain",
+  },
+  {
+    id: "self-hosted",
+    label: "Your file in public/videos/sample.mp4",
+    fileName: "sample.mp4",
+    ...SELF_HOSTED_SAMPLE,
+    license: "Your download (CC0 / Pexels / Mixkit)",
+  },
+] as const;

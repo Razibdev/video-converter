@@ -15,10 +15,9 @@ export default function StudioPage() {
             Video Variant Studio
           </h1>
           <p className="mt-3 max-w-2xl text-lg text-zinc-600 dark:text-zinc-400">
-            Upload <strong>one</strong> copyright-free video and export{" "}
-            <strong>many versions</strong>: 4K / 1080p / 720p, vertical Reels,
-            zoom in & out, fade in & out, slow/fast speed, mirror, and color
-            styles — ready for YouTube and Facebook.
+            Pick copyright-free footage, select all the options you want (4K,
+            Reels, zoom, fade, speed, mirror, color…), and generate{" "}
+            <strong>one combined video</strong> with a live progress bar.
           </p>
         </div>
       </header>

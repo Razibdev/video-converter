@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ProgressBar } from "@/components/ProgressBar";
 import {
   downloadBlob,
   loadFfmpeg,
-  renderVideoVariant,
+  renderCombinedVideo,
 } from "@/lib/ffmpeg-processor";
 import {
   formatFileSize,
@@ -16,19 +17,10 @@ import {
   VARIANT_CATEGORIES,
   VARIANT_RECIPES,
   getRecipesByCategory,
-  type VariantRecipe,
 } from "@/lib/video-variants";
+import { StudioVideoSources } from "@/components/StudioVideoSources";
 
-type JobStatus = "pending" | "processing" | "done" | "error";
-
-interface VariantJob {
-  recipe: VariantRecipe;
-  status: JobStatus;
-  progress: number;
-  fileName?: string;
-  blob?: Blob;
-  error?: string;
-}
+type GenerateStatus = "idle" | "processing" | "done" | "error";
 
 export function VideoVariantStudio() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -38,10 +30,14 @@ export function VideoVariantStudio() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [jobs, setJobs] = useState<VariantJob[]>([]);
   const [ffmpegReady, setFfmpegReady] = useState(false);
-  const [ffmpegLoading, setFfmpegLoading] = useState(false);
-  const [processing, setProcessing] = useState(false);
+  const [status, setStatus] = useState<GenerateStatus>("idle");
+  const [progress, setProgress] = useState(0);
+  const [progressPhase, setProgressPhase] = useState("");
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [resultFileName, setResultFileName] = useState<string | null>(null);
+  const [resultBlob, setResultBlob] = useState<Blob | null>(null);
+  const [appliedLabels, setAppliedLabels] = useState<string[]>([]);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(
     "resolution"
@@ -52,6 +48,18 @@ export function VideoVariantStudio() {
       if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [previewUrl]);
+
+  useEffect(() => {
+    if (status !== "processing") {
+      setElapsedSec(0);
+      return;
+    }
+    const t0 = Date.now();
+    const id = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - t0) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [status]);
 
   const loadSource = useCallback((file: File) => {
     if (!isAcceptedVideoFile(file)) {
@@ -68,8 +76,11 @@ export function VideoVariantStudio() {
       if (prev) URL.revokeObjectURL(prev);
       return URL.createObjectURL(file);
     });
-    setJobs([]);
-    setSelectedIds(new Set());
+    setStatus("idle");
+    setProgress(0);
+    setResultBlob(null);
+    setResultFileName(null);
+    setAppliedLabels([]);
   }, []);
 
   function toggleRecipe(id: string) {
@@ -102,37 +113,16 @@ export function VideoVariantStudio() {
     });
   }
 
-  async function ensureFfmpeg() {
-    if (ffmpegReady) return true;
-    setFfmpegLoading(true);
-    try {
-      await loadFfmpeg();
-      setFfmpegReady(true);
-      return true;
-    } catch {
-      setGlobalError(
-        "Could not load video engine. Check internet (FFmpeg WASM loads from CDN)."
-      );
-      return false;
-    } finally {
-      setFfmpegLoading(false);
-    }
-  }
-
-  async function generateVariants() {
+  async function generateCombinedVideo() {
     if (!sourceFile) {
       setGlobalError("Upload a video first.");
       return;
     }
     if (selectedIds.size === 0) {
-      setGlobalError("Select at least one variant option.");
+      setGlobalError("Select at least one option.");
       return;
     }
 
-    const ready = await ensureFfmpeg();
-    if (!ready) return;
-
-    const recipes = VARIANT_RECIPES.filter((r) => selectedIds.has(r.id));
     const dur =
       duration > 0
         ? duration
@@ -140,74 +130,70 @@ export function VideoVariantStudio() {
           ? videoRef.current.duration
           : 10;
 
-    setProcessing(true);
+    setStatus("processing");
+    setProgress(0);
+    setProgressPhase("Loading video engine…");
     setGlobalError(null);
+    setResultBlob(null);
+    setResultFileName(null);
+    setAppliedLabels([]);
 
-    const initialJobs: VariantJob[] = recipes.map((recipe) => ({
-      recipe,
-      status: "pending",
-      progress: 0,
-    }));
-    setJobs(initialJobs);
+    try {
+      const ffmpeg = await loadFfmpeg((pct) => {
+        setProgress(Math.round(pct * 0.25));
+        setProgressPhase("Loading video engine…");
+      });
+      setFfmpegReady(true);
 
-    const ffmpeg = await loadFfmpeg();
-
-    for (let i = 0; i < recipes.length; i++) {
-      const recipe = recipes[i];
-      setJobs((prev) =>
-        prev.map((j) =>
-          j.recipe.id === recipe.id
-            ? { ...j, status: "processing", progress: 0 }
-            : j
-        )
+      setProgressPhase("Generating combined video…");
+      const result = await renderCombinedVideo(
+        ffmpeg,
+        sourceFile,
+        selectedIds,
+        dur,
+        sourceFile.name,
+        (pct) => {
+          setProgress(25 + Math.round(pct * 0.75));
+          setProgressPhase("Generating combined video…");
+        }
       );
 
-      try {
-        const result = await renderVideoVariant(
-          ffmpeg,
-          sourceFile,
-          recipe,
-          dur,
-          sourceFile.name
-        );
-        setJobs((prev) =>
-          prev.map((j) =>
-            j.recipe.id === recipe.id
-              ? {
-                  ...j,
-                  status: "done",
-                  progress: 100,
-                  blob: result.blob,
-                  fileName: result.fileName,
-                }
-              : j
-          )
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Export failed";
-        setJobs((prev) =>
-          prev.map((j) =>
-            j.recipe.id === recipe.id
-              ? { ...j, status: "error", error: msg }
-              : j
-          )
-        );
-      }
+      setResultBlob(result.blob);
+      setResultFileName(result.fileName);
+      setAppliedLabels(result.labels);
+      setProgress(100);
+      setProgressPhase("Complete");
+      setStatus("done");
+      downloadBlob(result.blob, result.fileName);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Export failed";
+      setGlobalError(msg);
+      setStatus("error");
+      setProgressPhase("");
     }
-
-    setProcessing(false);
   }
 
-  function downloadAllDone() {
-    jobs
-      .filter((j) => j.status === "done" && j.blob && j.fileName)
-      .forEach((j) => downloadBlob(j.blob!, j.fileName!));
-  }
-
-  const doneCount = jobs.filter((j) => j.status === "done").length;
+  const processing = status === "processing";
+  const showProgress = processing || status === "done";
 
   return (
     <div className="space-y-8">
+      <StudioVideoSources
+        onVideoReady={loadSource}
+        onError={(msg) => setGlobalError(msg || null)}
+        disabled={processing}
+        convertProgress={
+          processing
+            ? {
+                percent: progress,
+                doneCount: progress >= 100 ? 1 : 0,
+                total: 1,
+                currentLabel: progressPhase,
+              }
+            : null
+        }
+      />
+
       <div
         role="button"
         tabIndex={0}
@@ -232,7 +218,7 @@ export function VideoVariantStudio() {
           {sourceFile ? sourceFile.name : "Choose one video from your desktop"}
         </p>
         <p className="mt-1 text-sm text-zinc-500">
-          Same video → many versions (4K, zoom, fade, Reels size…)
+          All selected options → one combined video
         </p>
         {sourceFile && (
           <p className="mt-1 text-xs text-zinc-400">
@@ -266,6 +252,10 @@ export function VideoVariantStudio() {
         <p className="font-medium text-zinc-900 dark:text-zinc-50">
           Quick packs — select many at once
         </p>
+        <p className="mt-1 text-xs text-zinc-500">
+          All checked options are merged into one video (resolution/aspect/speed
+          use the last pick in each group).
+        </p>
         <div className="mt-3 flex flex-wrap gap-2">
           {QUICK_PACKS.map((pack) => (
             <button
@@ -295,7 +285,8 @@ export function VideoVariantStudio() {
           </button>
         </div>
         <p className="mt-2 text-xs text-zinc-500">
-          {selectedIds.size} variant{selectedIds.size !== 1 ? "s" : ""} selected
+          {selectedIds.size} option{selectedIds.size !== 1 ? "s" : ""} selected →
+          1 combined video
         </p>
       </div>
 
@@ -310,9 +301,7 @@ export function VideoVariantStudio() {
             >
               <button
                 type="button"
-                onClick={() =>
-                  setExpandedCategory(open ? null : cat.id)
-                }
+                onClick={() => setExpandedCategory(open ? null : cat.id)}
                 className="flex w-full items-center justify-between bg-zinc-50 px-4 py-3 text-left font-medium dark:bg-zinc-900"
               >
                 {cat.label}
@@ -361,65 +350,63 @@ export function VideoVariantStudio() {
         })}
       </div>
 
+      {showProgress && (
+        <ProgressBar
+          large
+          percent={progress}
+          label={progressPhase || "Generating video"}
+          sublabel={
+            processing
+              ? `Merging ${selectedIds.size} options · ${elapsedSec}s elapsed${
+                  progress >= 90
+                    ? " · finishing up (encoding is slow in browser)"
+                    : ""
+                }`
+              : "Your video is ready"
+          }
+        />
+      )}
+
       <div className="flex flex-wrap gap-3">
         <button
           type="button"
           disabled={processing || !sourceFile || selectedIds.size === 0}
-          onClick={() => void generateVariants()}
+          onClick={() => void generateCombinedVideo()}
           className="rounded-lg bg-emerald-600 px-6 py-3 font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
         >
           {processing
-            ? `Generating… (${doneCount}/${selectedIds.size})`
-            : ffmpegLoading
-              ? "Loading video engine…"
-              : `Generate ${selectedIds.size} version(s)`}
+            ? `${progressPhase} ${progress}% · ${elapsedSec}s`
+            : `Generate 1 video (${selectedIds.size} options)`}
         </button>
-        {doneCount > 0 && (
+        {status === "done" && resultBlob && resultFileName && (
           <button
             type="button"
-            onClick={downloadAllDone}
+            onClick={() => downloadBlob(resultBlob, resultFileName)}
             className="rounded-lg border border-zinc-300 px-6 py-3 font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
           >
-            Download all done ({doneCount})
+            Download MP4 again
           </button>
         )}
       </div>
 
-      {!ffmpegReady && !ffmpegLoading && (
+      {!ffmpegReady && !processing && (
         <p className="text-xs text-zinc-500">
           First export downloads FFmpeg (~25 MB) once. Processing runs in your
           browser — nothing is uploaded to a server.
         </p>
       )}
 
-      {jobs.length > 0 && (
-        <ul className="space-y-2">
-          {jobs.map((job) => (
-            <li
-              key={job.recipe.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 px-4 py-3 dark:border-zinc-800"
-            >
-              <div>
-                <p className="text-sm font-medium">{job.recipe.label}</p>
-                <p className="text-xs text-zinc-500">
-                  {job.status === "pending" && "Waiting…"}
-                  {job.status === "processing" && "Processing…"}
-                  {job.status === "error" && job.error}
-                  {job.status === "done" && job.fileName}
-                </p>
-              </div>
-              {job.status === "done" && job.blob && job.fileName && (
-                <button
-                  type="button"
-                  onClick={() => downloadBlob(job.blob!, job.fileName!)}
-                  className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm text-white dark:bg-zinc-100 dark:text-zinc-900"
-                >
-                  Download MP4
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
+      {status === "done" && resultFileName && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950/40">
+          <p className="text-sm font-medium text-emerald-900 dark:text-emerald-100">
+            Done — {resultFileName}
+          </p>
+          {appliedLabels.length > 0 && (
+            <p className="mt-2 text-xs text-emerald-800 dark:text-emerald-200">
+              Applied: {appliedLabels.join(" · ")}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
